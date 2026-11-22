@@ -1,0 +1,14 @@
+C:\Users\tilak\OneDrive\Desktop\microoss\target\debug\build\serde/607197e50e3eb8aa\out\serde-607197e50e3eb8aa.d: C:\Users\tilak\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\lib.rs C:\Users\tilak\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\integer128.rs C:\Users\tilak\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\mod.rs C:\Users\tilak\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\de.rs C:\Users\tilak\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\ser.rs C:\Users\tilak\OneDrive\Desktop\microoss\target\debug\build\serde/f032d56e3f64124e\out/private.rs
+
+C:\Users\tilak\OneDrive\Desktop\microoss\target\debug\build\serde/607197e50e3eb8aa\out\libserde-607197e50e3eb8aa.rlib: C:\Users\tilak\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\lib.rs C:\Users\tilak\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\integer128.rs C:\Users\tilak\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\mod.rs C:\Users\tilak\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\de.rs C:\Users\tilak\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\ser.rs C:\Users\tilak\OneDrive\Desktop\microoss\target\debug\build\serde/f032d56e3f64124e\out/private.rs
+
+C:\Users\tilak\OneDrive\Desktop\microoss\target\debug\build\serde/607197e50e3eb8aa\out\libserde-607197e50e3eb8aa.rmeta: C:\Users\tilak\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\lib.rs C:\Users\tilak\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\integer128.rs C:\Users\tilak\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\mod.rs C:\Users\tilak\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\de.rs C:\Users\tilak\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\ser.rs C:\Users\tilak\OneDrive\Desktop\microoss\target\debug\build\serde/f032d56e3f64124e\out/private.rs
+
+C:\Users\tilak\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\lib.rs:
+C:\Users\tilak\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\integer128.rs:
+C:\Users\tilak\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\mod.rs:
+C:\Users\tilak\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\de.rs:
+C:\Users\tilak\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\ser.rs:
+C:\Users\tilak\OneDrive\Desktop\microoss\target\debug\build\serde/f032d56e3f64124e\out/private.rs:
+
+# env-dep:OUT_DIR=C:\\Users\\tilak\\OneDrive\\Desktop\\microoss\\target\\debug\\build\\serde/f032d56e3f64124e\\out
