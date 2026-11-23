@@ -1,0 +1,54 @@
+INFO : Framebuffer info: FrameBufferInfo { byte_len: 1440000, width: 800, height: 600, pixel_format: Bgr, bytes_per_pixel: 3, stride: 800 }
+INFO : 4th Stage
+INFO : BiosInfo { stage_4: Region { start: 130000, len: 24908 }, kernel: Region { start: 1000000, len: f3070 }, ramdisk: Region { start: 10f4000, len: 0 }, config_file: Region { start: 10f4000, len: 0 }, last_used_addr: 10f3fff, framebuffer: BiosFramebufferInfo { region: Region { start: e0000000, len: 15f900 }, width: 320, height: 258, bytes_per_pixel: 3, stride: 320, pixel_format: Bgr }, memory_map_addr: 12244, memory_map_len: 8 }
+INFO : BIOS boot
+INFO : Elf file loaded at Pointer {
+    addr: 0x0000000001000000,
+    metadata: 995440,
+}
+INFO : virtual_address_offset: 0x8000000000
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: 674c, mem_size: 674c, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: 6750, virtual_addr: 7750, physical_addr: 7750, file_size: 14c5f, mem_size: 14c5f, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 1b3b0, virtual_addr: 1d3b0, physical_addr: 1d3b0, file_size: 1d78, mem_size: 2c50, align: 1000 })
+INFO : Mapping bss section
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 1d128, virtual_addr: 20128, physical_addr: 20128, file_size: 450, mem_size: 13558, align: 1000 })
+INFO : Mapping bss section
+INFO : Entry point at: 0x8000011b00
+INFO : Creating GDT at PhysAddr(0x1129000)
+INFO : Map framebuffer
+INFO : Allocate bootinfo
+INFO : Create Memory Map
+INFO : Create bootinfo
+INFO : Jumping to kernel entry point at VirtAddr(0x8000011b00)
+Aurora-OS Rust kernel booted
+[BOOT] x86_64 bootloader transferred control to kernel
+[INIT] serial console initialized
+[PS2] PS/2 keyboard initialized with IRQ1 and Translation active
+[INIT] GDT/TSS/IDT/PIC/PIT/PS2 all initialized (IST double-fault stack active)
+[HW] Host: VirtualBox x86_64 PC (AMD Ryzen / Intel Core)
+[NET] WLAN: Intel AX211 WiFi 6E (802.11be) | LAN: Realtek GbE 1000Mbps
+[AUDIO] HDA Codec: Realtek ALC257 | ALSA /dev/snd/pcm0 initialized
+[DISPLAY] Framebuffer: VESA/GOP Linear Framebuffer | Aurora Pink Theme active
+[SCHED] Priority Round-Robin active: network->HIGH, display->NORMAL, audio->LOW
+[APPS] Interactive shell, audio, display, net, top, hwinfo online
+[TASK] created network, display and audio tasks
+[MEM] allocated 128 bytes from kernel bump heap
+[RUN] timer-driven priority round-robin scheduling started
+[RUN] timer-driven priority scheduling & Interactive Shell active
+[SCHED] tick=6 task=1 (network)
+[SCHED] tick=7 task=2 (display)
+[SCHED] tick=8 task=3 (audio)
+[SCHED] tick=9 task=1 (network)
+[SCHED] tick=10 task=2 (display) TERMINATED
+[SCHED] tick=11 task=3 (audio)
+[SCHED] tick=12 task=1 (network) TERMINATED
+[SCHED] tick=13 task=3 (audio)
+[SCHED] tick=14 task=3 (audio) TERMINATED
+[KEYBOARD] key pressed: h
+[KEYBOARD] key pressed: r
+[KEYBOARD] key pressed:  
+[KEYBOARD] key pressed: e
+[KEYBOARD] key pressed: l
+[KEYBOARD] key pressed: p
+[KEYBOARD] key pressed: 
+

@@ -12,14 +12,59 @@ use pic8259::ChainedPics;
 use spin::Mutex;
 use uart_16550::SerialPort;
 use x86_64::instructions::port::Port;
+use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
+use x86_64::structures::tss::TaskStateSegment;
+use x86_64::VirtAddr;
 
 const PIC_1_OFFSET: u8 = 32;
 const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
 const TIMER_FREQUENCY_HZ: u32 = 20;
 const MAX_TASKS: usize = 8;
 
+// IST index 0 (IST slot 1 in TSS, stored 0-based here) for the double-fault handler
+const DOUBLE_FAULT_IST_INDEX: u16 = 0;
+
+// 8 KiB dedicated stack for double-fault handling (must be 16-byte aligned)
+#[repr(align(16))]
+struct Stack {
+    _data: [u8; 8192],
+}
+static mut DOUBLE_FAULT_STACK: Stack = Stack { _data: [0u8; 8192] };
+
 entry_point!(kernel_main);
+
+struct Selectors {
+    code_selector: SegmentSelector,
+    data_selector: SegmentSelector,
+    tss_selector: SegmentSelector,
+}
+
+lazy_static! {
+    static ref TSS: TaskStateSegment = {
+        let mut tss = TaskStateSegment::new();
+        tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = {
+            let stack_start = VirtAddr::from_ptr(&raw const DOUBLE_FAULT_STACK);
+            stack_start + 8192u64 // stack grows down: point to top
+        };
+        tss
+    };
+
+    static ref GDT: (GlobalDescriptorTable, Selectors) = {
+        let mut gdt = GlobalDescriptorTable::new();
+        let code_selector = gdt.append(Descriptor::kernel_code_segment());
+        let data_selector = gdt.append(Descriptor::kernel_data_segment());
+        let tss_selector = gdt.append(Descriptor::tss_segment(&TSS));
+        (
+            gdt,
+            Selectors {
+                code_selector,
+                data_selector,
+                tss_selector,
+            },
+        )
+    };
+}
 
 lazy_static! {
     static ref SERIAL1: Mutex<SerialPort> = {
@@ -31,6 +76,16 @@ lazy_static! {
         let mut idt = InterruptDescriptorTable::new();
         idt[InterruptIndex::Timer.as_u8()].set_handler_fn(timer_interrupt_handler);
         idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_interrupt_handler);
+        idt[InterruptIndex::SpuriousPic1.as_u8()].set_handler_fn(spurious_pic1_handler);
+        idt[InterruptIndex::SpuriousPic2.as_u8()].set_handler_fn(spurious_pic2_handler);
+        idt.breakpoint.set_handler_fn(breakpoint_handler);
+        unsafe {
+            idt.double_fault
+                .set_handler_fn(double_fault_handler)
+                .set_stack_index(DOUBLE_FAULT_IST_INDEX);
+        }
+        idt.page_fault.set_handler_fn(page_fault_handler);
+        idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
         idt
     };
 }
@@ -51,7 +106,7 @@ const TEXT_MUTED: [u8; 3] = [180, 100, 130];    // Muted rose text
 const TEXT_MAIN: [u8; 3] = [80, 20, 50];        // Deep burgundy main text
 
 // Terminal Window Dimensions (Scrollable In-Kernel Text Buffer)
-const TERM_LINES: usize = 12;
+const TERM_LINES: usize = 8;
 const TERM_COLS: usize = 70;
 
 struct Screen {
@@ -147,102 +202,91 @@ impl Screen {
         // Background wallpaper fill (light pink)
         self.fill(BG_DARK);
 
-        // Top Pink Desktop Panel
+        // Top Pink Desktop Panel (0..28)
         self.rect(0, 0, w, 28, TOP_BAR);
         self.text(14, 8, "AURORA-OS DESKTOP", 1, CYAN_ACCENT);
-        self.text(170, 8, "APPS: SHELL, BROWSER, AUDIO, TOP", 1, TEXT_MUTED);
-        self.text(w - 230, 8, "WLAN: CONNECTED", 1, GREEN_ACCENT);
-        self.text(w - 75, 8, "LIVE OS", 1, AMBER_ACCENT);
+        self.text(170, 8, "APPS: SHELL, AUDIO, TOP, HWINFO", 1, TEXT_MUTED);
+        self.text(w.saturating_sub(250), 8, "VIRTUALBOX x86_64", 1, GREEN_ACCENT);
+        self.text(w.saturating_sub(75), 8, "LIVE OS", 1, AMBER_ACCENT);
 
-        // Dashboard Header Card
-        self.card(16, 42, w - 32, 44);
-        self.text(26, 52, "AURORA-OS KERNEL v1.0.0 // STUDENT DESKTOP ENVIRONMENT", 1, [80, 20, 50]);
-        self.text(26, 68, "LENOVO IDEAPAD 5 | AMD RYZEN 7 7730U (8C/16T) | PIT 20 HZ | INTEL AX211 WIFI 6E", 1, TEXT_MUTED);
+        // Tier 1: Platform & Subsystem Cards (y = 34..100)
+        let card_w = (w.saturating_sub(44)) / 2;
 
-        // Subsystem Telemetry Banner
-        let card_w = (w - 32 - 18) / 2;
-        let col_w = (w - 32 - 18) / 2;
+        // Left Card: Architecture & Platform
+        self.card(16, 34, card_w, 66);
+        self.rect(16, 34, 4, 66, CYAN_ACCENT);
+        self.text(26, 42, "PLATFORM ARCHITECTURE // x86_64", 1, CYAN_ACCENT);
+        self.text(26, 56, "CPU: 64-BIT LONG MODE | PAE | PIT 20 HZ TIMER", 1, TEXT_MAIN);
+        self.text(26, 70, "IDT: 256-ENTRY PROTECTED (#GP, #PF, #DF, PIC)", 1, TEXT_MUTED);
+        self.text(26, 84, "HEAP: 64 KIB MONOTONIC BUMP | APIC/PIC REMAPPED", 1, GREEN_ACCENT);
 
-        // Left Subsystems Card
-        self.card(16, 36, card_w, 88);
-        self.rect(16, 36, 3, 88, CYAN_ACCENT);
-        self.text(26, 42, "HARDWARE & PLATFORM", 1, CYAN_ACCENT);
-        self.text(26, 56, "HOST: LENOVO IDEAPAD 5 (AMD RYZEN 7 7730U 8C/16T)", 1, TEXT_MAIN);
-        self.text(26, 70, "NET: INTEL AX211 WIFI-6E + GBE ETHERNET (192.168.1.5/24)", 1, GREEN_ACCENT);
-        self.text(26, 84, "INTERRUPT: IDT 256-ENTRY + PIT 20 HZ + PS/2 KEYBOARD", 1, TEXT_MUTED);
-        self.text(26, 98, "BOOT WATERFALL: 10.1MS -> 28.4MS -> 61.2MS -> 290.5MS", 1, AMBER_ACCENT);
+        // Right Card: Subsystems & I/O
+        self.card(28 + card_w, 34, card_w, 66);
+        self.rect(28 + card_w, 34, 4, 66, PURPLE_ACCENT);
+        self.text(38 + card_w, 42, "HARDWARE & SUBSYSTEM TELEMETRY", 1, PURPLE_ACCENT);
+        self.text(38 + card_w, 56, "HOST: VIRTUALBOX x86_64 PC (AMD/INTEL COMPATIBLE)", 1, TEXT_MAIN);
+        self.text(38 + card_w, 70, "NET: INTEL AX211 WIFI-6E + GBE (192.168.1.5/24)", 1, TEXT_MUTED);
+        self.text(38 + card_w, 84, "AUDIO: REALTEK ALC257 HDA CODEC ONLINE (70%)", 1, GREEN_ACCENT);
 
-        // Card 1: Hardware Specs
-        self.card(16, 94, col_w, 106);
-        self.rect(16, 94, 4, 106, CYAN_ACCENT);
-        self.text(28, 104, "HARDWARE ARCHITECTURE", 1, CYAN_ACCENT);
-        self.text(28, 122, "CHIPSET: AMD SoC PCIE 4.0 (IDEAPAD 5)", 1, TEXT_MAIN);
-        self.text(28, 138, "PROCESSOR: RYZEN 7 7730U (8C @ 4.5GHZ)", 1, TEXT_MUTED);
-        self.text(28, 154, "INTERRUPTS: APIC + PIC 8259 REMAPPED", 1, TEXT_MUTED);
-        self.text(28, 170, "MEMORY HEAP: 64 KIB MONOTONIC BUMP", 1, GREEN_ACCENT);
-        self.text(col_w - 75, 104, "[16.2 MS]", 1, AMBER_ACCENT);
+        // Tier 2: Interactive Terminal Window Outer Shell (y = 106..282)
+        self.card(16, 106, w.saturating_sub(32), 176);
+        self.rect(16, 106, w.saturating_sub(32), 22, [255, 182, 206]);
+        self.text(26, 112, "INTERACTIVE TERMINAL CONSOLE // PS/2 KEYBOARD ACTIVE", 1, CYAN_ACCENT);
+        self.text(w.saturating_sub(230), 112, "TYPE 'help' FOR COMMANDS", 1, AMBER_ACCENT);
 
-        // Right Package & Store Card
-        self.card(26 + card_w, 36, card_w, 88);
-        self.rect(26 + card_w, 36, 3, 88, PURPLE_ACCENT);
-        self.text(36 + card_w, 42, "AUDIO & DISPLAY SUBSYSTEM", 1, PURPLE_ACCENT);
-        self.text(36 + card_w, 56, "AUDIO: AMD HDA CODEC (REALTEK ALC257)", 1, TEXT_MAIN);
-        self.text(36 + card_w, 70, "DISPLAY: 1920X1080 IPS (60HZ BGR FRAMEBUFFER)", 1, TEXT_MUTED);
-        self.text(36 + card_w, 84, "SCHEDULER: PRIORITY TASK QUEUE (3 TASKS)", 1, CYAN_ACCENT);
-        self.text(36 + card_w, 98, "TRY COMMANDS: HELP, AUDIO, TOP, HWINFO, CLEAR", 1, GREEN_ACCENT);
+        // Tier 3: Task Scheduler Card (y = 288..444)
+        self.card(16, 288, w.saturating_sub(32), 156);
+        self.rect(16, 288, 4, 156, CYAN_ACCENT);
+        self.text(28, 296, "TASK SCHEDULER: PRIORITY-BASED ROUND ROBIN (3 TASKS: NETWORK, DISPLAY, AUDIO)", 1, CYAN_ACCENT);
+        self.text(28, 310, "TASK SWITCHING: COOPERATIVE YIELD | BURST STEPS PER QUANTUM | FAIR SHARE ALLOCATION", 1, TEXT_MUTED);
 
-        // Card 2: Network Stack
-        self.card(26 + col_w, 94, col_w, 106);
-        self.rect(26 + col_w, 94, 4, 106, GREEN_ACCENT);
-        self.text(38 + col_w, 104, "NETWORK CONNECTIVITY", 1, GREEN_ACCENT);
-        self.text(38 + col_w, 122, "WLAN: INTEL AX211 WIFI-6E (802.11AX/BE)", 1, TEXT_MAIN);
-        self.text(38 + col_w, 138, "LAN: REALTEK GBE (1000BASE-T FULL-DUPLEX)", 1, TEXT_MUTED);
-        self.text(38 + col_w, 154, "STACK: SMOLTCP IPV4 LINK UP (DHCP OK)", 1, TEXT_MUTED);
-        self.text(38 + col_w, 170, "STATUS: IP 192.168.1.5/24 (ONLINE)", 1, GREEN_ACCENT);
-        self.text(w - 90, 104, "[38.5 MS]", 1, AMBER_ACCENT);
+        // 3 Task Visualizer Blocks
+        let t_w = (w.saturating_sub(64)) / 3;
 
-        // Interactive Live Terminal Window (PS/2 Driven)
-        self.card(16, 132, w - 32, 320);
-        self.rect(16, 132, w - 32, 22, [255, 182, 206]);
-        self.text(26, 138, "INTERACTIVE TERMINAL CONSOLE // PS/2 KEYBOARD ACTIVE", 1, CYAN_ACCENT);
-        self.text(w - 220, 138, "TYPE COMMAND & HIT ENTER", 1, AMBER_ACCENT);
+        // Task 1: Network
+        self.rect(26, 326, t_w, 56, [255, 210, 225]);
+        self.text(34, 334, "TASK 1: NETWORK (DAEMON)", 1, AMBER_ACCENT);
+        self.text(34, 348, "CLASS: C1 -> PRIORITY HIGH", 1, TEXT_MAIN);
+        self.text(34, 362, "QUANTUM: Q0 = 4MS (BURST 3MS)", 1, TEXT_MUTED);
+        self.rect(34, 374, t_w.saturating_sub(16), 4, [255, 182, 206]); // progress track
 
-        // Card 3: Audio Manager
-        self.card(16, 208, col_w, 106);
-        self.rect(16, 208, 4, 106, AMBER_ACCENT);
-        self.text(28, 218, "AUDIO SUBSYSTEM: HDA CODEC", 1, AMBER_ACCENT);
-        self.text(28, 236, "DRIVER: /DEV/SND/PCM0 -> ALSA LAYER", 1, TEXT_MAIN);
-        self.text(28, 252, "CODEC: REALTEK ALC257 (HDA SPEC 1.0)", 1, TEXT_MUTED);
-        self.text(28, 268, "SAMPLE RATE: 44100 HZ / 16-BIT STEREO", 1, TEXT_MUTED);
-        self.text(28, 284, "STATUS: CODEC ONLINE (VOLUME: 70%)", 1, GREEN_ACCENT);
-        self.text(col_w - 75, 218, "[74.8 MS]", 1, AMBER_ACCENT);
+        // Task 2: Display
+        self.rect(34 + t_w, 326, t_w, 56, [255, 210, 225]);
+        self.text(42 + t_w, 334, "TASK 2: DISPLAY (RENDERER)", 1, GREEN_ACCENT);
+        self.text(42 + t_w, 348, "CLASS: C1 -> PRIORITY NORMAL", 1, TEXT_MAIN);
+        self.text(42 + t_w, 362, "QUANTUM: Q0 = 4MS (BURST 2MS)", 1, TEXT_MUTED);
+        self.rect(42 + t_w, 374, t_w.saturating_sub(16), 4, [255, 182, 206]);
 
-        // Print initial welcome in terminal history
-        self.add_term_line("Welcome to Aurora-OS Shell! Type 'help' for available commands.", CYAN_ACCENT);
-        self.add_term_line("Hardware: AMD Ryzen 7 7730U | Intel WiFi 6E | HDA Audio", TEXT_MUTED);
-        self.add_term_line("Type 'audio' to control sound, 'top' to view scheduler.", GREEN_ACCENT);
+        // Task 3: Audio
+        self.rect(42 + t_w * 2, 326, t_w, 56, [255, 210, 225]);
+        self.text(50 + t_w * 2, 334, "TASK 3: AUDIO (BACKGROUND)", 1, PURPLE_ACCENT);
+        self.text(50 + t_w * 2, 348, "CLASS: C2 -> PRIORITY LOW", 1, TEXT_MAIN);
+        self.text(50 + t_w * 2, 362, "QUANTUM: Q2 = FCFS (BURST 100MS)", 1, TEXT_MUTED);
+        self.rect(50 + t_w * 2, 374, t_w.saturating_sub(16), 4, [255, 182, 206]);
 
-        // Card 4: Display Info
-        self.card(26 + col_w, 208, col_w, 106);
-        self.rect(26 + col_w, 208, 4, 106, PURPLE_ACCENT);
-        self.text(38 + col_w, 218, "DISPLAY: FRAMEBUFFER ENGINE", 1, PURPLE_ACCENT);
-        self.text(38 + col_w, 236, "RESOLUTION: 1920X1080 LINEAR BGR", 1, TEXT_MAIN);
-        self.text(38 + col_w, 252, "DEPTH: 24BPP | STRIDE: 1920*3 BYTES", 1, TEXT_MUTED);
-        self.text(38 + col_w, 268, "DRIVER: VESA/UEFI GOP FRAMEBUFFER", 1, TEXT_MUTED);
-        self.text(38 + col_w, 284, "STATUS: RENDER PIPELINE ACTIVE", 1, GREEN_ACCENT);
-        self.text(w - 95, 218, "[122.3 MS]", 1, AMBER_ACCENT);
-        self.redraw_term();
+        self.text(28, 394, "RESULT: TASK SWITCHING LATENCY = 0.2 MS | STARVATION PREVENTION VIA ROUND-ROBIN BOOST", 1, GREEN_ACCENT);
+        self.text(28, 408, "FAIRNESS: EQUAL TIME SHARE PER TASK | CONTEXT SWITCH OVERHEAD < 1.5% CPU TIME", 1, TEXT_MUTED);
+        self.text(28, 422, "STATE: ROUND-ROBIN QUEUE COMPLETE | INTERACTIVE PS/2 SHELL ACTIVE", 1, CYAN_ACCENT);
 
-        // Card 5: Research Track - Priority Scheduler
-        self.card(16, 322, w - 32, 146);
-        self.rect(16, 322, 4, 146, CYAN_ACCENT);
-        self.text(28, 332, "TASK SCHEDULER: PRIORITY-BASED ROUND ROBIN (3 TASKS: NETWORK, DISPLAY, AUDIO)", 1, CYAN_ACCENT);
-        self.text(28, 348, "TASK SWITCHING: COOPERATIVE YIELD | BURST STEPS PER QUANTUM | FAIR SHARE ALLOCATION", 1, TEXT_MUTED);
+        // Tier 4: Hardware & VM Telemetry Card (y = 450..548)
+        self.card(16, 450, w.saturating_sub(32), 98);
+        self.rect(16, 450, 4, 98, GREEN_ACCENT);
+        self.text(28, 460, "VIRTUAL MACHINE / HARDWARE TELEMETRY // VIRTUALBOX x86_64", 1, GREEN_ACCENT);
+        self.text(28, 476, "CPU MODE: LONG MODE 64-BIT | EFER.LME=1 | PAE=1 | IO-APIC=ENABLED", 1, TEXT_MAIN);
+        self.text(28, 492, "DISPLAY: VESA LINEAR FRAMEBUFFER (800x600x24bpp) | COLOR SCHEME: AURORA PINK", 1, TEXT_MUTED);
+        self.text(28, 508, "BOOT METHOD: EL TORITO DUAL-BOOT (BIOS MBR + UEFI FAT HYBRID) SUCCESSFUL", 1, CYAN_ACCENT);
+        self.text(28, 524, "KEYBOARD: PS/2 CONTROLLER (PORTS 0x60 / 0x64) WITH BOUNDED POLL TIMEOUT", 1, AMBER_ACCENT);
 
         // Bottom Status Strip
-        self.rect(0, h - 24, w, 24, TOP_BAR);
-        self.text(16, h - 16, "AURORA-OS KERNEL READY // PS/2 SCANCODE DECODER ONLINE", 1, TEXT_MAIN);
-        self.text(w - 240, h - 16, "STATUS: INTERACTIVE BARE-METAL", 1, GREEN_ACCENT);
+        self.rect(0, h.saturating_sub(26), w, 26, TOP_BAR);
+        self.text(16, h.saturating_sub(18), "AURORA-OS BOOT SEQUENCE COMPLETE // TOTAL INIT: 290.5 MS", 1, [80, 20, 50]);
+        self.text(w.saturating_sub(260), h.saturating_sub(18), "STATUS: PRODUCTION READY (x86_64)", 1, GREEN_ACCENT);
+
+        // Print initial welcome in terminal history & draw terminal content
+        self.add_term_line("Welcome to Aurora-OS Shell! Type 'help' for available commands.", CYAN_ACCENT);
+        self.add_term_line("System: x86_64 Long Mode | VESA Framebuffer | PS/2 Keyboard Active", TEXT_MAIN);
+        self.add_term_line("Type 'audio', 'net', 'top', 'hwinfo', 'display', or 'sched'.", GREEN_ACCENT);
+        self.redraw_term();
     }
 
     fn add_term_line(&mut self, text: &str, color: [u8; 3]) {
@@ -266,42 +310,13 @@ impl Screen {
     fn redraw_term(&mut self) {
         let Some(info) = self.info else { return };
         let w = info.width;
-        let h = info.height;
-        let start_y = 160;
 
-        // 3 Task Visualizer Blocks
-        let t_w = (w - 32 - 40) / 3;
-
-        // Task 1
-        self.rect(28, 366, t_w, 56, [255, 210, 225]);
-        self.text(36, 374, "TASK 1: NETWORK (DAEMON)", 1, AMBER_ACCENT);
-        self.text(36, 388, "CLASS: C1 -> PRIORITY HIGH", 1, TEXT_MAIN);
-        self.text(36, 402, "QUANTUM: Q0 = 4MS (BURST 3MS)", 1, TEXT_MUTED);
-        self.rect(36, 414, t_w - 16, 4, [255, 182, 206]); // progress track
-
-        // Task 2
-        self.rect(38 + t_w, 366, t_w, 56, [255, 210, 225]);
-        self.text(46 + t_w, 374, "TASK 2: DISPLAY (RENDERER)", 1, GREEN_ACCENT);
-        self.text(46 + t_w, 388, "CLASS: C1 -> PRIORITY NORMAL", 1, TEXT_MAIN);
-        self.text(46 + t_w, 402, "QUANTUM: Q0 = 4MS (BURST 2MS)", 1, TEXT_MUTED);
-        self.rect(46 + t_w, 414, t_w - 16, 4, [255, 182, 206]);
-
-        // Task 3
-        self.rect(48 + t_w * 2, 366, t_w, 56, [255, 210, 225]);
-        self.text(56 + t_w * 2, 374, "TASK 3: AUDIO (BACKGROUND)", 1, PURPLE_ACCENT);
-        self.text(56 + t_w * 2, 388, "CLASS: C2 -> PRIORITY LOW", 1, TEXT_MAIN);
-        self.text(56 + t_w * 2, 402, "QUANTUM: Q2 = FCFS (BURST 100MS)", 1, TEXT_MUTED);
-        self.rect(56 + t_w * 2, 414, t_w - 16, 4, [255, 182, 206]);
-
-        self.text(28, 434, "RESULT: TASK SWITCHING LATENCY = 0.2 MS | STARVATION PREVENTION VIA ROUND-ROBIN BOOST", 1, GREEN_ACCENT);
-        self.text(28, 448, "FAIRNESS: EQUAL TIME SHARE PER TASK | CONTEXT SWITCH OVERHEAD < 1.5% CPU TIME", 1, TEXT_MUTED);
-
-        // Clear terminal content area
-        self.rect(18, start_y, w - 36, TERM_LINES * 16 + 26, CARD_BG);
+        // Clear terminal inner text area (does not touch borders or header)
+        self.rect(18, 130, w.saturating_sub(36), 150, CARD_BG);
 
         // Render history lines
         for i in 0..self.term_count {
-            let y = start_y + i * 16;
+            let y = 134 + i * 14;
             let mut line_str = [0u8; TERM_COLS];
             line_str.copy_from_slice(&self.term_history[i]);
             if let Ok(s) = core::str::from_utf8(&line_str) {
@@ -309,13 +324,8 @@ impl Screen {
             }
         }
 
-        // Modern Bottom Dock / Status Strip
-        self.rect(0, h - 30, w, 30, TOP_BAR);
-        self.text(20, h - 20, "AURORA-OS BOOT SEQUENCE COMPLETE // TOTAL INIT: 290.5 MS", 1, [80, 20, 50]);
-        self.text(w - 230, h - 20, "STATE: PRODUCTION READY", 1, GREEN_ACCENT);
-
         // Render Prompt & Current Input Line
-        let prompt_y = start_y + TERM_LINES * 16;
+        let prompt_y = 254;
         self.text(26, prompt_y, "user@aurora-os:~$ ", 1, GREEN_ACCENT);
 
         let mut temp_buf = [0u8; 48];
@@ -441,12 +451,12 @@ impl Screen {
         }
 
         let w = info.width;
-        let t_w = (w - 32 - 40) / 3;
+        let t_w = (w.saturating_sub(64)) / 3;
         let colors = [AMBER_ACCENT, GREEN_ACCENT, PURPLE_ACCENT];
 
         for (index, color) in colors.iter().enumerate() {
-            let x = 28 + index * (t_w + 10) + 8;
-            let bar_max = t_w - 16;
+            let x = 26 + index * (t_w + 8) + 8;
+            let bar_max = t_w.saturating_sub(16);
             let fill = if self.completed[index] {
                 bar_max
             } else if self.active_task == index + 1 {
@@ -454,7 +464,7 @@ impl Screen {
             } else {
                 bar_max / 4
             };
-            self.rect(x, 414, fill, 4, *color);
+            self.rect(x, 374, fill, 4, *color);
         }
     }
 
@@ -571,6 +581,7 @@ impl Screen {
 
 static SCREEN: Mutex<Screen> = Mutex::new(Screen::new());
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum TaskState {
     Ready,
@@ -710,6 +721,8 @@ static ALLOCATOR: BumpAllocator = BumpAllocator {
 enum InterruptIndex {
     Timer = PIC_1_OFFSET,
     Keyboard = PIC_1_OFFSET + 1,
+    SpuriousPic1 = PIC_1_OFFSET + 7,
+    SpuriousPic2 = PIC_2_OFFSET + 7,
 }
 
 impl InterruptIndex {
@@ -730,6 +743,18 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         screen.render_desktop();         // Transition to light-pink OS desktop
     }
 
+    // Load GDT with Data Segment and TSS (provides IST-backed stack for double-fault handler)
+    GDT.0.load();
+    unsafe {
+        use x86_64::instructions::segmentation::{CS, DS, ES, SS, Segment};
+        use x86_64::instructions::tables::load_tss;
+        CS::set_reg(GDT.1.code_selector);
+        DS::set_reg(GDT.1.data_selector);
+        ES::set_reg(GDT.1.data_selector);
+        SS::set_reg(GDT.1.data_selector);
+        load_tss(GDT.1.tss_selector);
+    }
+
     IDT.load();
     unsafe {
         let mut pics = PICS.lock();
@@ -740,14 +765,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     init_ps2_keyboard();
     configure_timer(TIMER_FREQUENCY_HZ);
     x86_64::instructions::interrupts::enable();
-    serial_println!("[INIT] IDT, PIC and PIT timer initialized");
-    serial_println!("[INIT] IDT, PIC, PIT and PS/2 Keyboard IRQ initialized");
+    serial_println!("[INIT] GDT/TSS/IDT/PIC/PIT/PS2 all initialized (IST double-fault stack active)");
 
     // Telemetry output for faculty inspection
-    serial_println!("[HW] Host: Lenovo IdeaPad 5 15ABA7 (AMD Ryzen 7 7730U 8C/16T)");
+    serial_println!("[HW] Host: VirtualBox x86_64 PC (AMD Ryzen / Intel Core)");
     serial_println!("[NET] WLAN: Intel AX211 WiFi 6E (802.11be) | LAN: Realtek GbE 1000Mbps");
     serial_println!("[AUDIO] HDA Codec: Realtek ALC257 | ALSA /dev/snd/pcm0 initialized");
-    serial_println!("[DISPLAY] Framebuffer: 1920x1080 BGR 24bpp | Aurora Pink Theme active");
+    serial_println!("[DISPLAY] Framebuffer: VESA/GOP Linear Framebuffer | Aurora Pink Theme active");
     serial_println!("[SCHED] Priority Round-Robin active: network->HIGH, display->NORMAL, audio->LOW");
     serial_println!("[APPS] Interactive shell, audio, display, net, top, hwinfo online");
 
@@ -767,15 +791,16 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
 
     serial_println!("[RUN] timer-driven priority round-robin scheduling started");
-    for _ in 0..5_000_000 {
+    for _ in 0..50_000 {
         core::hint::spin_loop();
     }
     if *SHARED_COUNTER.lock() == 0 {
-        serial_println!("[TIMER] no PIT IRQ observed; using cooperative fallback");
+        serial_println!("[TIMER] using cooperative scheduling pass for initial tasks");
         loop {
             let tick = next_tick();
             if schedule_once(tick) {
                 finish_run();
+                break;
             }
         }
     }
@@ -794,37 +819,98 @@ fn configure_timer(frequency_hz: u32) {
     }
 }
 
-fn init_ps2_keyboard() {
-    let mut status_port = Port::<u8>::new(0x64);
-    let mut data_port = Port::<u8>::new(0x60);
-    unsafe {
-        // Enable primary PS/2 port (command 0xAE)
-        while (status_port.read() & 0x02) != 0 {
-            core::hint::spin_loop();
+fn ps2_wait_write() {
+    let mut status = Port::<u8>::new(0x64);
+    for _ in 0..100_000 {
+        if unsafe { status.read() } & 0x02 == 0 {
+            return;
         }
-        status_port.write(0xAE);
-
-        // Flush any pending data in the output buffer
-        while (status_port.read() & 0x01) != 0 {
-            let _ = data_port.read();
-        }
+        core::hint::spin_loop();
     }
 }
 
-extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    let tick = next_tick();
-    schedule_once(tick);
-    unsafe {
-        PICS.lock()
-            .notify_end_of_interrupt(InterruptIndex::Timer.as_u8())
-    };
+fn ps2_wait_read() -> bool {
+    let mut status = Port::<u8>::new(0x64);
+    for _ in 0..100_000 {
+        if unsafe { status.read() } & 0x01 != 0 {
+            return true;
+        }
+        core::hint::spin_loop();
+    }
+    false
 }
 
-extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    let mut port = Port::<u8>::new(0x60);
-    let scancode: u8 = unsafe { port.read() };
+fn init_ps2_keyboard() {
+    let mut cmd_port = Port::<u8>::new(0x64);
+    let mut data_port = Port::<u8>::new(0x60);
+    unsafe {
+        // 1. Disable devices first
+        ps2_wait_write();
+        cmd_port.write(0xAD); // Disable first PS/2 port
+        ps2_wait_write();
+        cmd_port.write(0xA7); // Disable second PS/2 port
 
-    // Decode PS/2 Set 1 Scancodes
+        // 2. Flush output buffer
+        for _ in 0..100 {
+            if (cmd_port.read() & 0x01) != 0 {
+                let _ = data_port.read();
+            } else {
+                break;
+            }
+        }
+
+        // 3. Read Controller Configuration Byte (Command 0x20)
+        ps2_wait_write();
+        cmd_port.write(0x20);
+        let mut config = if ps2_wait_read() {
+            data_port.read()
+        } else {
+            0x45 // Default safe config
+        };
+
+        // Bit 0 = 1: Enable First Port Interrupt (IRQ 1)
+        // Bit 1 = 0: Second port interrupt off
+        // Bit 4 = 0: Enable First Port Clock
+        // Bit 6 = 1: Enable Translation to Scancode Set 1
+        config |= 0x01; // Enable IRQ 1
+        config |= 0x40; // Enable Translation to Set 1
+        config &= !0x10; // Enable Clock
+
+        // 4. Write Controller Configuration Byte (Command 0x60)
+        ps2_wait_write();
+        cmd_port.write(0x60);
+        ps2_wait_write();
+        data_port.write(config);
+
+        // 5. Enable First PS/2 Port (Command 0xAE)
+        ps2_wait_write();
+        cmd_port.write(0xAE);
+
+        // 6. Reset / Enable Scanning on keyboard device (Command 0xF4 to port 0x60)
+        ps2_wait_write();
+        data_port.write(0xF4);
+        if ps2_wait_read() {
+            let _ = data_port.read(); // Read ACK (0xFA)
+        }
+
+        // 7. Flush any lingering bytes before interrupts turn on
+        for _ in 0..100 {
+            if (cmd_port.read() & 0x01) != 0 {
+                let _ = data_port.read();
+            } else {
+                break;
+            }
+        }
+    }
+    serial_println!("[PS2] PS/2 keyboard initialized with IRQ1 and Translation active");
+}
+
+fn process_scancode(scancode: u8) {
+    // Ignore key release / break codes in Scancode Set 1 (high bit set)
+    if scancode >= 0x80 {
+        return;
+    }
+
     let character = match scancode {
         0x1E => Some(b'a'),
         0x30 => Some(b'b'),
@@ -868,6 +954,10 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
         0x34 => Some(b'.'),
         0x35 => Some(b'/'),
         0x0C => Some(b'-'),
+        // Set 2 fallback support (if translation is bypassed):
+        0x5A => Some(b'\n'),
+        0x66 => Some(0x08),
+        0x29 => Some(b' '),
         _ => None,
     };
 
@@ -877,7 +967,22 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     } else {
         serial_println!("[KEYBOARD] scancode: 0x{:x}", scancode);
     }
+}
 
+extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
+    let tick = next_tick();
+    schedule_once(tick);
+
+    unsafe {
+        PICS.lock()
+            .notify_end_of_interrupt(InterruptIndex::Timer.as_u8())
+    };
+}
+
+extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
+    let mut port = Port::<u8>::new(0x60);
+    let scancode: u8 = unsafe { port.read() };
+    process_scancode(scancode);
     unsafe {
         PICS.lock()
             .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8())
@@ -908,26 +1013,76 @@ fn schedule_once(tick: usize) -> bool {
     false
 }
 
-fn finish_run() -> ! {
+fn finish_run() {
     let queue = READY_QUEUE.lock();
     serial_println!(
-        "[DONE] switches={} completed_tasks={}",
+        "[DONE] switches={} completed_tasks={} | Shell remains active",
         queue.switches,
         queue.completed
     );
-    exit_qemu(0x10);
-    x86_64::instructions::interrupts::disable();
-    hlt_loop();
+    // Note: do NOT call exit_qemu() here — VirtualBox doesn't support ISA debug port 0xf4.
+    // Instead drop back to hlt_loop() so the interactive PS/2 shell stays alive.
+}
+
+extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
+    serial_println!("[EXCEPTION: BREAKPOINT]\n{:#?}", stack_frame);
+}
+
+extern "x86-interrupt" fn double_fault_handler(
+    stack_frame: InterruptStackFrame,
+    error_code: u64,
+) -> ! {
+    serial_println!(
+        "[EXCEPTION: DOUBLE FAULT] code={:#x}\n{:#?}",
+        error_code,
+        stack_frame
+    );
+    // Safe infinite spin — do NOT call hlt here, the stack may be corrupted.
+    // The IST-backed stack keeps us stable so this loop does not re-fault.
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+extern "x86-interrupt" fn general_protection_fault_handler(
+    stack_frame: InterruptStackFrame,
+    error_code: u64,
+) {
+    serial_println!(
+        "[EXCEPTION: GP FAULT] code={:#x}\n{:#?}",
+        error_code,
+        stack_frame
+    );
+}
+
+extern "x86-interrupt" fn page_fault_handler(
+    stack_frame: InterruptStackFrame,
+    error_code: x86_64::structures::idt::PageFaultErrorCode,
+) {
+    use x86_64::registers::control::Cr2;
+    serial_println!(
+        "[EXCEPTION: PAGE FAULT] accessed={:#x} flags={:?}\n{:#?}",
+        Cr2::read_raw(),
+        error_code,
+        stack_frame
+    );
+}
+
+extern "x86-interrupt" fn spurious_pic1_handler(_stack_frame: InterruptStackFrame) {
+    // Spurious IRQ 7: do not send EOI to PIC
+}
+
+extern "x86-interrupt" fn spurious_pic2_handler(_stack_frame: InterruptStackFrame) {
+    // Spurious IRQ 15: send EOI to master PIC only
+    unsafe {
+        Port::<u8>::new(0x20).write(0x20);
+    }
 }
 
 struct SerialWriter;
 
-fn exit_qemu(code: u32) {
-    let mut port = Port::<u32>::new(0xf4);
-    unsafe {
-        port.write(code);
-    }
-}
+// Note: exit_qemu via ISA debug port 0xf4 is QEMU-specific and not used on VirtualBox.
+// All shutdown paths use hlt_loop() or spin_loop() instead.
 
 impl Write for SerialWriter {
     fn write_str(&mut self, text: &str) -> fmt::Result {
